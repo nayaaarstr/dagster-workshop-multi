@@ -1,45 +1,31 @@
-# dagster-workshop-multi
+# pipeline_weather
 
-A multi-container introduction to [Dagster](https://dagster.io) using the
-real production pattern: one Docker container per pipeline, each running its
-own Dagster gRPC code server, registered with a central webserver/daemon via
-`workspace.yaml`.
+Ingests current weather observations (temperature, wind speed) for five
+Indonesian cities from the free [Open-Meteo](https://open-meteo.com/) API and
+lands them in a `weather_observations` table. Picked weather because it's a
+public, no-auth API that updates continuously, so the pipeline has fresh data
+to materialize on every run — a good fit for demonstrating Dagster's daily
+schedule pattern.
 
-## Prerequisites
+Built on top of [dagster-workshop-multi](https://github.com/<original-org>/dagster-workshop-multi),
+a multi-container Dagster workshop — see that repo's README for the base
+architecture (`pipeline_products`, `pipeline_fx`, `pipeline_ml`).
 
-- Docker Desktop (or Docker Engine + Docker Compose)
-- Internet access (`pipeline_products` and `pipeline_fx` call free public APIs)
+## What I built
 
-## Quickstart
+- **Track:** A — new source pipeline
+- **Data source:** [Open-Meteo Forecast API](https://open-meteo.com/en/docs) (no API key required)
+- **Key assets:**
+  - `raw_weather` — fetches current weather for 5 cities (Jakarta, Bandung,
+    Surabaya, Yogyakarta, Medan) from Open-Meteo
+  - `weather_table` — loads `raw_weather` into the shared warehouse Postgres
+    as `weather_observations`
+- **Quality gate:** `temperature_in_plausible_range` — an `@asset_check` on
+  `raw_weather` that fails if any reading falls outside -90°C to 60°C
+  (Earth's recorded temperature extremes), catching bad API responses or
+  parsing bugs before they land in the warehouse.
 
-```bash
-docker compose up --build
-```
-
-Then open http://localhost:3000. Under Deployment > Code Locations you should
-see `pipeline_products`, `pipeline_fx`, and `pipeline_ml`, each its own
-container. Select all assets and click "Materialize all" to run all three
-pipelines end to end — `pipeline_ml` trains on the data the other two just
-loaded, so it needs to run after them at least once.
-
-## Verifying a run
-
-- **In the UI:** every asset in the graph should turn green. A red asset
-  means its run failed — click it and open the run logs for the error.
-  `model_quality_check` (under `pipeline_ml`) should show a passing check;
-  a failing check means the trained model's accuracy dropped below the 0.6
-  threshold — click it in the Asset Checks panel to see the reported
-  accuracy.
-- **In the warehouse:** connect to the shared Postgres directly and confirm
-  data actually landed:
-  ```bash
-  docker compose exec warehouse_postgresql psql -U warehouse_user -d warehouse -c "\dt"
-  docker compose exec warehouse_postgresql psql -U warehouse_user -d warehouse -c "SELECT COUNT(*) FROM order_value_predictions;"
-  ```
-  You should see `products`, `orders`, `exchange_rates`, and
-  `order_value_predictions` tables, each with rows.
-
-## What just happened
+## Architecture
 
 ```
                      dagster_webserver (:3000)  <-- workspace.yaml -->  dagster_daemon
@@ -48,65 +34,37 @@ loaded, so it needs to run after them at least once.
                                                      |
                              dagster_postgresql  (Dagster's own run/schedule/event storage)
 
-  pipeline_products (:4000)          pipeline_fx (:4001)          pipeline_ml (:4002)
-  fakestoreapi.com ->                api.frankfurter.app ->       trains a classifier on
-  raw_products/raw_orders            raw_exchange_rates           products+orders, writes
-        |                                  |                      predictions back
-        v                                  v                            |
-  products, orders  ------------->  warehouse_postgresql  <-------------+
-  tables                            (also: exchange_rates,
-                                      order_value_predictions)
+  pipeline_products (:4000)      pipeline_fx (:4001)      pipeline_ml (:4002)      pipeline_weather (:4003)
+  fakestoreapi.com ->            api.frankfurter.app ->   trains a classifier      api.open-meteo.com ->
+  raw_products/raw_orders        raw_exchange_rates       on products+orders       raw_weather
+        |                              |                        |                        |
+        v                              v                        v                        v
+  products, orders  ----------->  warehouse_postgresql  <---------------------------------+
+  tables                          (also: exchange_rates,
+                                   order_value_predictions,
+                                   weather_observations)
 ```
 
-Each pipeline is a fully independent container: its own `Dockerfile`, its own
-`requirements.txt`, its own source/db modules. They only share the
-`warehouse_postgresql` database as a landing zone — exactly like production's
-21 pipeline containers, each pulling from its own source system into one
-destination database. `pipeline_ml` is the odd one out: instead of pulling
-from an external API, it reads `pipeline_products`' tables straight out of
-the warehouse, trains a classifier, and writes predictions back — see
-[docs/mlops.md](docs/mlops.md) for why Dagster's asset/asset-check model
-fits that pattern too.
-
-All three pipelines write with a simple truncate-and-load (`if_exists="replace"`)
-— a simplified stand-in for production's shift-based "check-then-insert"
-pattern.
-
-## Running the tests locally
-
-Each pipeline has its own test suite, independent of Docker — tests mock
-the external API calls and the warehouse connection, so no running database
-or containers are needed:
+## Running it
 
 ```bash
-cd pipeline_products && pip install -r requirements.txt && python -m pytest -v
-cd pipeline_fx && pip install -r requirements.txt && python -m pytest -v
-cd pipeline_ml && pip install -r requirements.txt && python -m pytest -v
+docker compose up --build
 ```
 
-## Exercises
+Open http://localhost:3000, find `pipeline_weather` under Deployment > Code
+Locations, and materialize its assets (`raw_weather` → `weather_table`).
 
-See [docs/exercises.md](docs/exercises.md) for three hands-on TODOs, in
-increasing difficulty. Each one has a `# TODO(exercise-N)` comment marking
-where to add your code.
+## Demo
 
-## Capstone
+<img width="1361" height="674" alt="Screenshot 2026-07-31 001250" src="https://github.com/user-attachments/assets/629fd1e7-df9b-4fb4-a816-8cb7eabb381c" />
 
-Once you've finished the three exercises, see
-[docs/capstone.md](docs/capstone.md) for a bigger, open-ended assignment:
-build and wire in your own pipeline, in your own fork, and turn it into a
-portfolio piece.
 
-## How this maps to the production pipeline
+## What I'd do differently in production
 
-This is adapted from a real Dagster + Docker production system with 21
-pipeline containers pulling manufacturing data (OEE, downtime, QC) from
-internal MSSQL/AS400 systems into a central SQL Server database. This
-workshop keeps the core architecture — one container per pipeline, gRPC code
-servers, `workspace.yaml` registration, a shared destination database — but
-swaps the internal systems for free public APIs, and drops production's
-`DockerRunLauncher` (which spawns a fresh container per run via a mounted
-`docker.sock`) in favor of Dagster's default run launcher, where runs execute
-in-process within each pipeline's own gRPC container. See
-`dagster-workshop-basic` for a single-container introduction to the core
-Dagster concepts before diving into this multi-container version.
+This uses truncate-and-load (`if_exists="replace"`) instead of incremental
+upserts, so historical observations are overwritten on every run instead of
+accumulated as a time series — fine for a demo, not for real trend analysis.
+There's also no retry/backoff around the Open-Meteo call and no secrets
+manager for credentials (they're plain environment variables here). In
+production I'd add a `partition` per day so each day's readings are kept,
+plus alerting on the asset check failure instead of just a red icon in the UI.
