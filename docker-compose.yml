@@ -76,6 +76,23 @@ services:
     depends_on:
       - warehouse_postgresql
 
+  pipeline_weather:
+    build: ./pipeline_weather
+    container_name: pipeline_weather
+    environment:
+      WAREHOUSE_HOST: warehouse_postgresql
+      WAREHOUSE_PORT: "5432"
+      WAREHOUSE_USER: warehouse_user
+      WAREHOUSE_PASSWORD: warehouse_password
+      WAREHOUSE_DB: warehouse
+      DAGSTER_POSTGRES_USER: postgres_user
+      DAGSTER_POSTGRES_PASSWORD: postgres_password
+      DAGSTER_POSTGRES_DB: postgres_db
+    networks:
+      - dagster_network
+    depends_on:
+      - warehouse_postgresql
+
   dagster_webserver:
     build: .
     container_name: dagster_webserver
@@ -119,20 +136,3 @@ networks:
 volumes:
   dagster_postgres_data:
   warehouse_postgres_data:
-
-pipeline_weather:
-    build: ./pipeline_weather
-    container_name: pipeline_weather
-    environment:
-      WAREHOUSE_HOST: warehouse_postgresql
-      WAREHOUSE_PORT: "5432"
-      WAREHOUSE_USER: warehouse_user
-      WAREHOUSE_PASSWORD: warehouse_password
-      WAREHOUSE_DB: warehouse
-      DAGSTER_POSTGRES_USER: postgres_user
-      DAGSTER_POSTGRES_PASSWORD: postgres_password
-      DAGSTER_POSTGRES_DB: postgres_db
-    networks:
-      - dagster_network
-    depends_on:
-      - warehouse_postgresql
